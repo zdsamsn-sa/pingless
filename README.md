@@ -4,56 +4,71 @@
 
 ## 功能
 
-- 自动登录（推荐使用 Session Cookie）
-- 自动点击服务器续期按钮（每 48 小时）
-- 自动访问 `/afk` 页面收集 Credits
+- Session Cookie 登录（推荐）
+- 自动尝试点击续期按钮
+- 自动访问 `/afk` 并挂机收集 Credits
+- **全程自动截图**，方便排查问题
+- 页面元素调试信息输出（按钮文字 + 关键词）
+- 截图自动上传为 Artifact
 - 支持 Telegram 通知
 - 支持手动触发
 
 ## 快速开始
 
-1. 将本仓库内容上传到你的 **私有** GitHub 仓库。
-2. 进入仓库 **Settings → Secrets and variables → Actions**，添加以下 Secrets：
+1. 把本仓库内容放到你的 **私有** GitHub 仓库。
+2. 进入 **Settings → Secrets and variables → Actions**，添加以下 Secrets：
 
 | Secret 名称 | 必填 | 说明 |
 |-------------|------|------|
-| `SESSION_COOKIE` | **强烈推荐** | 手动登录后从浏览器复制的 Cookie |
-| `SERVER_ID` | 是 | 服务器 id（示例：`b7887be7`） |
-| `NUMERIC_ID` | 是 | numeric 参数（示例：`4678`） |
+| `SESSION_COOKIE` | **是** | 浏览器登录后复制的 Cookie |
+| `SERVER_ID` | 是 | 服务器 id（示例 `b7887be7`） |
+| `NUMERIC_ID` | 是 | numeric 参数（示例 `4678`） |
 | `TG_BOT_TOKEN` | 否 | Telegram Bot Token |
 | `TG_CHAT_ID` | 否 | Telegram Chat ID |
-| `DISCORD_EMAIL` / `DISCORD_PASSWORD` | 否 | Discord 登录（不推荐，成功率低） |
-| `GOOGLE_EMAIL` / `GOOGLE_PASSWORD` | 否 | Google 登录（不推荐） |
 
-### 如何获取 SESSION_COOKIE（最稳方式）
+### 获取 SESSION_COOKIE
 
-1. 用浏览器登录 https://dash.pingless.org
-2. 按 `F12` → **Application**（或 存储）→ **Cookies** → 选中 `dash.pingless.org`
-3. 复制所有相关 Cookie，或使用浏览器扩展（如 Cookie-Editor）导出为 `name=value; name2=value2` 格式
-4. 粘贴到 GitHub Secret `SESSION_COOKIE`
+1. 浏览器登录 https://dash.pingless.org
+2. 按 `F12` → Application → Cookies → 选中 `dash.pingless.org`
+3. 复制所有 cookie（或用 Cookie-Editor 扩展导出为 `name=value; name2=value2`）
+4. 粘贴到 Secret `SESSION_COOKIE`
 
-3. 启用 Actions 工作流后，会每 12 小时自动运行一次。也可在 Actions 页面手动触发。
+3. 启用 Actions 后每 12 小时自动运行，也可手动触发。
 
-## 文件说明
+## 截图说明
 
+每次运行都会在 `screenshots/` 目录生成多张截图，并作为 Artifact 上传：
+
+| 文件名 | 说明 |
+|--------|------|
+| `01_home.png` | 首页（登录后） |
+| `02_manage_page.png` | 服务器管理页（续期前）**重点看这个** |
+| `03_after_renew_click.png` | 点击续期后 |
+| `04_afk_page.png` | AFK 页面初始 **重点看这个** |
+| `05_afk_started.png` | 点击 AFK 按钮后 |
+| `06_afk_mid.png` | 挂机中途 |
+| `07_afk_final.png` | 挂机结束 |
+
+**如何下载截图**：Actions 运行完成后 → 进入该次运行 → 底部 Artifacts → 下载 `screenshots-xxxxx`
+
+## 调试建议
+
+如果日志显示「未找到续期按钮」或 AFK 没有效果：
+
+1. 下载最新截图，特别是 `02_manage_page.png` 和 `04_afk_page.png`
+2. 把截图发给我，或告诉我页面上实际按钮的文字
+3. 我会根据真实页面更新选择器
+
+也可以在日志中查看「页面调试」输出的按钮文字和关键词。
+
+## 调整 AFK 挂机时长
+
+在工作流文件中修改环境变量：
+
+```yaml
+AFK_SECONDS: "120"   # 改为 120 秒等
 ```
-.
-├── .github/workflows/pingless-renew.yml   # GitHub Actions 工作流
-├── scripts/
-│   ├── renew.py                           # 主脚本
-│   └── requirements.txt                   # Python 依赖
-├── README.md
-└── .gitignore
-```
-
-## 注意事项
-
-- Cloudflare 和页面结构可能会变化，若按钮点不到，请根据 Actions 日志中的截图更新 `scripts/renew.py` 里的选择器。
-- 强烈建议把仓库设为 **Private**，避免泄露 Cookie。
-- 首次运行后请查看 Actions 日志和生成的截图（`manage_page.png` 等），确认是否成功。
-- AFK 收集时长可按实际效果调整脚本中的 `time.sleep()`。
-- 续期频率默认每 12 小时，足以覆盖官方 48 小时续期窗口。
 
 ## 免责声明
 
-本脚本仅供个人学习与自动化使用。请遵守 Pingless 服务条款，合理使用，避免滥用导致账号被封禁。使用风险自负。
+仅供个人学习使用。请遵守 Pingless 服务条款，合理使用，风险自负。
