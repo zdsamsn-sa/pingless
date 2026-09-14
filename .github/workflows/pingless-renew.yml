@@ -1,0 +1,40 @@
+name: Pingless Auto Renew + AFK Credits
+
+on:
+  schedule:
+    # 每 12 小时执行一次（覆盖 48 小时续期窗口，留余量）
+    - cron: '0 */12 * * *'
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r scripts/requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Run Renew + AFK
+        env:
+          # 必须配置的 Secrets
+          DISCORD_EMAIL: ${{ secrets.DISCORD_EMAIL }}          # 可选，如果用 Discord 登录
+          DISCORD_PASSWORD: ${{ secrets.DISCORD_PASSWORD }}    # 可选
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}            # 可选，如果用 Google 登录
+          GOOGLE_PASSWORD: ${{ secrets.GOOGLE_PASSWORD }}      # 可选
+          SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}        # 推荐：手动登录后导出的 cookie
+          SERVER_ID: ${{ secrets.SERVER_ID }}                  # 你的服务器 id（b7887be7）
+          NUMERIC_ID: ${{ secrets.NUMERIC_ID }}                # 你的 numeric（4678）
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}            # 可选 Telegram 通知
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}                # 可选
+        run: python scripts/renew.py
