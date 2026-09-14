@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 Pingless 自动续期 + AFK Credits
-支持：
-1. STORAGE_STATE_JSON（推荐，最稳，可含 localStorage）
-2. SESSION_COOKIE（备用）
+优先使用 STORAGE_STATE_JSON（最稳）
 """
 
 import os
@@ -11,6 +9,7 @@ import sys
 import json
 import time
 import base64
+import re
 from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
@@ -25,7 +24,7 @@ STORAGE_STATE_JSON = os.getenv("STORAGE_STATE_JSON", "").strip()
 SESSION_COOKIE = os.getenv("SESSION_COOKIE", "").strip()
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
-AFK_SECONDS = int(os.getenv("AFK_SECONDS", "1800"))  # 默认 30 分钟
+AFK_SECONDS = int(os.getenv("AFK_SECONDS", "1800"))
 
 SCREENSHOT_DIR = Path("screenshots")
 SCREENSHOT_DIR.mkdir(exist_ok=True)
@@ -72,7 +71,6 @@ def save_shot(page, name: str, caption: str = ""):
 
 
 def dump_buttons(page, prefix: str = ""):
-    """打印页面上所有可见按钮/链接文字，方便调试选择器"""
     try:
         texts = page.evaluate("""() => {
             const els = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"], .btn, [class*="button"]'));
@@ -87,7 +85,7 @@ def dump_buttons(page, prefix: str = ""):
                 .filter(x => x.text.length > 0);
         }""")
         print(f"\n===== {prefix} 可见按钮/链接 =====")
-        for i, t in enumerate(texts[:40]):
+        for i, t in enumerate(texts[:50]):
             print(f"  [{i}] <{t['tag']}> text='{t['text']}' class='{t['class']}' id='{t['id']}'")
         print("================================\n")
         return texts
@@ -96,45 +94,59 @@ def dump_buttons(page, prefix: str = ""):
         return []
 
 
-def is_auth_page(page) -> bool:
-    url = page.url.lower()
-    if "/auth" in url or "/login" in url:
-        return True
-    for text in ["Continue with Discord", "Continue with Google", "Sign in to Pingless"]:
-        try:
-            if page.locator(f'text="{text}"').count() > 0:
-                return True
-        except:
-            pass
+def has_session_cookie(context) -> bool:
+    """只要有 pingless.sid 或 userId 就认为可能已登录"""
+    for c in context.cookies():
+        name = c.get("name", "").lower()
+        if name in ("pingless.sid", "sid", "userid", "user_id", "session", "token"):
+            print(f"检测到会话 Cookie: {c['name']}")
+            return True
     return False
 
 
-def is_public_landing(page) -> bool:
-    try:
-        title = page.title().lower()
-        if "free minecraft server hosting" in title:
+def is_logged_in(page, context=None) -> bool:
+    """更宽松的登录判断"""
+    url = page.url.lower()
+    if "/auth" in url or "/login" in url:
+        return False
+
+    # 有会话 cookie 就先认为可能登录
+    if context and has_session_cookie(context):
+        # 再看页面内容
+        try:
+            body = page.locator("body").inner_text(timeout=3000).lower()
+            # 如果明显是公开首页且没有任何后台元素，才判定失败
+            public_signals = ["actually free", "get started free", "spin up a minecraft server"]
+            private_signals = ["logout", "sign out", "dashboard", "my servers", "create server",
+                               "server list", "console", "file manager", "renew", "afk", "credits"]
+            has_public = any(s in body for s in public_signals)
+            has_private = any(s in body for s in private_signals)
+            if has_private:
+                return True
+            if has_public and not has_private:
+                return False
+            # 有 cookie 但页面模糊，先当登录成功，后续用管理页再验证
             return True
-        body = page.locator("body").inner_text(timeout=2000).lower()
-        if "actually free" in body or ("get started free" in body and "logout" not in body):
+        except:
             return True
-    except:
-        pass
     return False
 
 
 def load_storage_state():
     if not STORAGE_STATE_JSON:
         return None
-    raw = STORAGE_STATE_JSON
+    raw = STORAGE_STATE_JSON.strip()
     try:
-        if not raw.strip().startswith("{"):
-            raw = base64.b64decode(raw).decode("utf-8")
+        if not raw.startswith("{"):
+            try:
+                raw = base64.b64decode(raw).decode("utf-8")
+            except Exception:
+                raw = base64.b64decode(re.sub(r"\s+", "", raw)).decode("utf-8")
         data = json.loads(raw)
-        print(f"已加载 storage_state，cookies 数量: {len(data.get('cookies', []))}")
+        print(f"[storage_state] cookies: {len(data.get('cookies', []))}")
         if "origins" in data:
             for o in data["origins"]:
-                ls = o.get("localStorage", [])
-                print(f"  localStorage @ {o.get('origin')}: {len(ls)} 项")
+                print(f"  localStorage @ {o.get('origin')}: {len(o.get('localStorage', []))} 项")
         return data
     except Exception as e:
         print(f"解析 STORAGE_STATE_JSON 失败: {e}")
@@ -142,23 +154,12 @@ def load_storage_state():
 
 
 def try_click_renew(page) -> bool:
-    """尝试多种方式点击续期按钮，并打印所有按钮方便调试"""
     dump_buttons(page, "管理页")
-
-    # 精确选择器优先
     selectors = [
-        'button:has-text("Renew")',
-        'button:has-text("续期")',
-        'button:has-text("Extend")',
-        'button:has-text("Renew Server")',
-        'button:has-text("Renew Now")',
-        'button:has-text("Renew Free")',
-        'a:has-text("Renew")',
-        'button[class*="renew" i]',
-        '[data-action="renew"]',
-        'button:has-text("Extend Server")',
+        'button:has-text("Renew")', 'button:has-text("续期")', 'button:has-text("Extend")',
+        'button:has-text("Renew Server")', 'button:has-text("Renew Now")', 'button:has-text("Renew Free")',
+        'a:has-text("Renew")', 'button[class*="renew" i]', '[data-action="renew"]',
     ]
-
     for sel in selectors:
         try:
             btn = page.locator(sel).first
@@ -167,14 +168,8 @@ def try_click_renew(page) -> bool:
                 btn.scroll_into_view_if_needed()
                 btn.click(timeout=5000)
                 time.sleep(2)
-                # 确认弹窗
-                for csel in [
-                    'button:has-text("Confirm")',
-                    'button:has-text("确认")',
-                    'button:has-text("Yes")',
-                    'button:has-text("OK")',
-                    'button:has-text("确定")',
-                ]:
+                for csel in ['button:has-text("Confirm")', 'button:has-text("确认")',
+                             'button:has-text("Yes")', 'button:has-text("OK")', 'button:has-text("确定")']:
                     try:
                         cbtn = page.locator(csel).first
                         if cbtn.count() and cbtn.is_visible(timeout=1500):
@@ -183,51 +178,36 @@ def try_click_renew(page) -> bool:
                             break
                     except:
                         pass
-                time.sleep(2)
                 return True
         except Exception as e:
             print(f"选择器 {sel} 失败: {e}")
-            continue
-
-    # 模糊匹配：找包含 renew / 续期 的按钮
     try:
-        candidates = page.locator("button, a, [role='button']").all()
-        for el in candidates:
+        for el in page.locator("button, a, [role='button']").all():
             try:
                 txt = (el.inner_text() or "").strip().lower()
                 if any(k in txt for k in ["renew", "续期", "extend", "延长"]):
                     if el.is_visible():
-                        print(f"模糊匹配到按钮: '{txt}'")
+                        print(f"模糊匹配到: '{txt}'")
                         el.scroll_into_view_if_needed()
                         el.click(timeout=5000)
                         time.sleep(2)
                         return True
             except:
                 continue
-    except Exception as e:
-        print(f"模糊匹配失败: {e}")
-
+    except:
+        pass
     return False
 
 
 def try_start_afk(page) -> bool:
-    """尝试启动 AFK / 收集 Credits"""
     dump_buttons(page, "AFK 页")
-
     selectors = [
-        'button:has-text("Start")',
-        'button:has-text("开始")',
-        'button:has-text("AFK")',
-        'button:has-text("Collect")',
-        'button:has-text("Claim")',
-        'button:has-text("Collect Credits")',
-        'button:has-text("Start AFK")',
-        'button:has-text("Go AFK")',
-        'button:has-text("开始挂机")',
-        '[data-action="afk"]',
-        'button[class*="afk" i]',
+        'button:has-text("Start")', 'button:has-text("开始")', 'button:has-text("AFK")',
+        'button:has-text("Collect")', 'button:has-text("Claim")',
+        'button:has-text("Collect Credits")', 'button:has-text("Start AFK")',
+        'button:has-text("Go AFK")', 'button:has-text("开始挂机")',
+        '[data-action="afk"]', 'button[class*="afk" i]',
     ]
-
     for sel in selectors:
         try:
             btn = page.locator(sel).first
@@ -239,16 +219,13 @@ def try_start_afk(page) -> bool:
                 return True
         except:
             continue
-
-    # 模糊
     try:
-        candidates = page.locator("button, a, [role='button']").all()
-        for el in candidates:
+        for el in page.locator("button, a, [role='button']").all():
             try:
                 txt = (el.inner_text() or "").strip().lower()
                 if any(k in txt for k in ["afk", "collect", "claim", "start", "开始", "挂机"]):
                     if el.is_visible():
-                        print(f"模糊匹配 AFK 按钮: '{txt}'")
+                        print(f"模糊匹配 AFK: '{txt}'")
                         el.scroll_into_view_if_needed()
                         el.click(timeout=5000)
                         time.sleep(2)
@@ -257,7 +234,6 @@ def try_start_afk(page) -> bool:
                 continue
     except:
         pass
-
     return False
 
 
@@ -277,6 +253,7 @@ def main():
         }
         if storage:
             context_kwargs["storage_state"] = storage
+            print("已使用 STORAGE_STATE_JSON 创建上下文")
 
         context = browser.new_context(**context_kwargs)
         context.add_init_script(
@@ -285,102 +262,80 @@ def main():
         page = context.new_page()
 
         try:
-            if not storage and SESSION_COOKIE:
-                print("使用 SESSION_COOKIE 方式...")
-                cookies = []
-                for part in SESSION_COOKIE.replace("\n", ";").split(";"):
-                    part = part.strip()
-                    if "=" in part:
-                        n, v = part.split("=", 1)
-                        n, v = n.strip(), v.strip()
-                        if n and n.lower() not in ("path", "domain", "expires", "secure", "httponly", "samesite"):
-                            for domain in ["dash.pingless.org", ".pingless.org"]:
-                                cookies.append({
-                                    "name": n, "value": v,
-                                    "domain": domain, "path": "/",
-                                    "secure": True, "sameSite": "Lax",
-                                })
-                context.add_cookies(cookies)
-                print(f"注入 Cookie 数: {len(cookies)}")
-
-            if not storage and not SESSION_COOKIE:
-                tg_text("❌ 请配置 STORAGE_STATE_JSON（推荐）或 SESSION_COOKIE")
+            if not storage:
+                tg_text("❌ 请配置 STORAGE_STATE_JSON")
                 sys.exit(1)
 
-            page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(4)
-            save_shot(page, "01_home", "首页")
+            # 直接先访问管理页，比首页更可靠
+            print(f"直接访问管理页: {MANAGE_URL}")
+            page.goto(MANAGE_URL, wait_until="domcontentloaded", timeout=60000)
+            time.sleep(6)
+            save_shot(page, "01_manage_first", "首次进入管理页")
             print(f"URL: {page.url} | Title: {page.title()}")
 
             real_cookies = context.cookies()
-            print(f"浏览器 Cookie 数: {len(real_cookies)}")
+            print(f"浏览器当前 Cookie 数: {len(real_cookies)}")
             for c in real_cookies:
                 if "pingless" in c.get("domain", ""):
-                    print(f"  {c['name']} @ {c['domain']}")
+                    print(f"  {c['name']}={str(c['value'])[:40]}... @ {c['domain']}")
 
-            if is_auth_page(page) or is_public_landing(page):
-                tg_text("❌ 仍未登录成功，请检查 Cookie / STORAGE_STATE_JSON")
-                sys.exit(1)
+            # 如果被重定向到首页或 auth，再试一次首页
+            if "/auth" in page.url.lower() or "free minecraft server hosting" in page.title().lower():
+                print("管理页被重定向，尝试首页后再进管理页...")
+                page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
+                time.sleep(4)
+                save_shot(page, "01b_home", "首页")
+                page.goto(MANAGE_URL, wait_until="domcontentloaded", timeout=60000)
+                time.sleep(5)
+                save_shot(page, "01c_manage_retry", "重试管理页")
 
-            # ========== 管理页续期 ==========
+            if not is_logged_in(page, context):
+                # 最后再宽松一次：只要有 pingless.sid 就继续
+                if has_session_cookie(context):
+                    print("有会话 Cookie，强制继续执行...")
+                    tg_text("⚠️ 登录状态不确定，但有会话 Cookie，继续尝试")
+                else:
+                    tg_text("❌ 登录失败。请重新导出 storage_state（登录后务必看到服务器列表再按回车）")
+                    sys.exit(1)
+            else:
+                tg_text("✅ 登录成功")
+
+            # ========== 续期 ==========
             page.goto(MANAGE_URL, wait_until="domcontentloaded", timeout=60000)
             time.sleep(5)
             save_shot(page, "02_manage_before", "管理页-续期前")
 
-            if is_auth_page(page) or is_public_landing(page):
-                tg_text("❌ 管理页跳转失败 / 掉登录")
-                sys.exit(1)
-
-            tg_text("✅ 登录成功，进入管理页")
-
             renewed = try_click_renew(page)
             time.sleep(2)
             save_shot(page, "03_manage_after", "管理页-续期后")
-            tg_text("续期已点击" if renewed else "未找到续期按钮（已截图+打印按钮列表，请把截图和日志发我）")
+            tg_text("续期已点击" if renewed else "未找到续期按钮（请看截图和按钮列表）")
 
             # ========== AFK ==========
             page.goto(AFK_URL, wait_until="domcontentloaded", timeout=60000)
             time.sleep(5)
             save_shot(page, "04_afk_before", "AFK页-开始前")
 
-            if is_auth_page(page):
-                tg_text("❌ AFK 页掉登录")
-                sys.exit(1)
-
             started = try_start_afk(page)
             time.sleep(2)
             save_shot(page, "05_afk_started", "AFK页-点击后")
+            tg_text(f"AFK {'已启动' if started else '未找到按钮，仍保持页面打开'}，开始挂机 {AFK_SECONDS//60} 分钟")
 
-            if started:
-                tg_text(f"AFK 已启动，开始挂机 {AFK_SECONDS // 60} 分钟")
-            else:
-                tg_text("未找到明确的 Start/Collect 按钮，仍会保持页面打开挂机（请看截图确认是否需要手动操作）")
-
-            # 挂机循环（保持页面活跃）
             elapsed = 0
             while elapsed < AFK_SECONDS:
                 sleep_sec = min(60, AFK_SECONDS - elapsed)
                 time.sleep(sleep_sec)
                 elapsed += sleep_sec
-                mins = elapsed // 60
-                print(f"  已挂机 {mins} 分钟 / {AFK_SECONDS // 60} 分钟")
-
-                # 偶尔动一下鼠标/滚动，防止被判定为完全空闲
+                print(f"  已挂机 {elapsed//60} / {AFK_SECONDS//60} 分钟")
                 try:
                     page.mouse.move(100 + (elapsed % 50), 200 + (elapsed % 30))
-                    page.evaluate("window.scrollBy(0, 10)")
+                    page.evaluate("window.scrollBy(0, 5)")
                 except:
                     pass
-
-                if elapsed in (60, AFK_SECONDS // 2, AFK_SECONDS - 60) or elapsed % 300 == 0:
-                    save_shot(page, f"06_afk_{elapsed}s", f"挂机中 {mins}min")
-
-                if is_auth_page(page):
-                    tg_text("挂机过程中掉登录了")
-                    break
+                if elapsed in (60, AFK_SECONDS // 2) or elapsed % 300 == 0:
+                    save_shot(page, f"06_afk_{elapsed}s", f"挂机中 {elapsed//60}min")
 
             save_shot(page, "07_done", "全部结束")
-            tg_text("✅ 续期 + AFK 流程完成")
+            tg_text("✅ 流程完成")
 
         except Exception as e:
             tg_text(f"异常: {e}")
