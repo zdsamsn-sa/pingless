@@ -2,6 +2,7 @@
 """
 Pingless 自动续期 + AFK Credits
 优先使用 STORAGE_STATE_JSON（最稳）
+截图/通知策略：仅在「续期成功」和「挂机完成」时发送
 """
 
 import os
@@ -21,7 +22,6 @@ MANAGE_URL = f"{BASE_URL}/server/manage?id={SERVER_ID}&numeric={NUMERIC_ID}&mode
 AFK_URL = f"{BASE_URL}/afk"
 
 STORAGE_STATE_JSON = os.getenv("STORAGE_STATE_JSON", "").strip()
-SESSION_COOKIE = os.getenv("SESSION_COOKIE", "").strip()
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 AFK_SECONDS = int(os.getenv("AFK_SECONDS", "1800"))
@@ -59,12 +59,14 @@ def tg_photo(path: Path, caption: str = ""):
         print(f"TG photo error: {e}")
 
 
-def save_shot(page, name: str, caption: str = ""):
+def save_shot(page, name: str, send_tg: bool = False, caption: str = ""):
+    """默认只保存本地截图，不发 Telegram。需要通知时传 send_tg=True"""
     path = SCREENSHOT_DIR / f"{name}.png"
     try:
         page.screenshot(path=str(path), full_page=True)
         print(f"[截图] {path}")
-        tg_photo(path, caption or name)
+        if send_tg:
+            tg_photo(path, caption or name)
     except Exception as e:
         print(f"截图失败 {name}: {e}")
     return path
@@ -95,7 +97,6 @@ def dump_buttons(page, prefix: str = ""):
 
 
 def has_session_cookie(context) -> bool:
-    """只要有 pingless.sid 或 userId 就认为可能已登录"""
     for c in context.cookies():
         name = c.get("name", "").lower()
         if name in ("pingless.sid", "sid", "userid", "user_id", "session", "token"):
@@ -105,17 +106,12 @@ def has_session_cookie(context) -> bool:
 
 
 def is_logged_in(page, context=None) -> bool:
-    """更宽松的登录判断"""
     url = page.url.lower()
     if "/auth" in url or "/login" in url:
         return False
-
-    # 有会话 cookie 就先认为可能登录
     if context and has_session_cookie(context):
-        # 再看页面内容
         try:
             body = page.locator("body").inner_text(timeout=3000).lower()
-            # 如果明显是公开首页且没有任何后台元素，才判定失败
             public_signals = ["actually free", "get started free", "spin up a minecraft server"]
             private_signals = ["logout", "sign out", "dashboard", "my servers", "create server",
                                "server list", "console", "file manager", "renew", "afk", "credits"]
@@ -125,7 +121,6 @@ def is_logged_in(page, context=None) -> bool:
                 return True
             if has_public and not has_private:
                 return False
-            # 有 cookie 但页面模糊，先当登录成功，后续用管理页再验证
             return True
         except:
             return True
@@ -266,11 +261,10 @@ def main():
                 tg_text("❌ 请配置 STORAGE_STATE_JSON")
                 sys.exit(1)
 
-            # 直接先访问管理页，比首页更可靠
             print(f"直接访问管理页: {MANAGE_URL}")
             page.goto(MANAGE_URL, wait_until="domcontentloaded", timeout=60000)
             time.sleep(6)
-            save_shot(page, "01_manage_first", "首次进入管理页")
+            save_shot(page, "01_manage_first")  # 仅本地，不发 TG
             print(f"URL: {page.url} | Title: {page.title()}")
 
             real_cookies = context.cookies()
@@ -279,46 +273,47 @@ def main():
                 if "pingless" in c.get("domain", ""):
                     print(f"  {c['name']}={str(c['value'])[:40]}... @ {c['domain']}")
 
-            # 如果被重定向到首页或 auth，再试一次首页
             if "/auth" in page.url.lower() or "free minecraft server hosting" in page.title().lower():
                 print("管理页被重定向，尝试首页后再进管理页...")
                 page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
                 time.sleep(4)
-                save_shot(page, "01b_home", "首页")
                 page.goto(MANAGE_URL, wait_until="domcontentloaded", timeout=60000)
                 time.sleep(5)
-                save_shot(page, "01c_manage_retry", "重试管理页")
+                save_shot(page, "01c_manage_retry")
 
             if not is_logged_in(page, context):
-                # 最后再宽松一次：只要有 pingless.sid 就继续
                 if has_session_cookie(context):
                     print("有会话 Cookie，强制继续执行...")
-                    tg_text("⚠️ 登录状态不确定，但有会话 Cookie，继续尝试")
                 else:
-                    tg_text("❌ 登录失败。请重新导出 storage_state（登录后务必看到服务器列表再按回车）")
+                    tg_text("❌ 登录失败，请重新导出 storage_state")
                     sys.exit(1)
             else:
-                tg_text("✅ 登录成功")
+                print("✅ 登录成功")
 
             # ========== 续期 ==========
             page.goto(MANAGE_URL, wait_until="domcontentloaded", timeout=60000)
             time.sleep(5)
-            save_shot(page, "02_manage_before", "管理页-续期前")
+            save_shot(page, "02_manage_before")  # 仅本地
 
             renewed = try_click_renew(page)
             time.sleep(2)
-            save_shot(page, "03_manage_after", "管理页-续期后")
-            tg_text("续期已点击" if renewed else "未找到续期按钮（请看截图和按钮列表）")
+            # 只有续期成功才发通知 + 截图
+            if renewed:
+                save_shot(page, "03_renew_success", send_tg=True, caption="✅ 续期成功")
+                tg_text("✅ 续期成功")
+            else:
+                save_shot(page, "03_renew_fail", send_tg=True, caption="⚠️ 未找到续期按钮")
+                tg_text("⚠️ 未找到续期按钮（请看截图）")
 
             # ========== AFK ==========
             page.goto(AFK_URL, wait_until="domcontentloaded", timeout=60000)
             time.sleep(5)
-            save_shot(page, "04_afk_before", "AFK页-开始前")
+            save_shot(page, "04_afk_before")  # 仅本地
 
             started = try_start_afk(page)
             time.sleep(2)
-            save_shot(page, "05_afk_started", "AFK页-点击后")
-            tg_text(f"AFK {'已启动' if started else '未找到按钮，仍保持页面打开'}，开始挂机 {AFK_SECONDS//60} 分钟")
+            save_shot(page, "05_afk_started")  # 仅本地
+            print(f"AFK {'已启动' if started else '未找到按钮，仍保持页面打开'}，开始挂机 {AFK_SECONDS//60} 分钟")
 
             elapsed = 0
             while elapsed < AFK_SECONDS:
@@ -331,16 +326,18 @@ def main():
                     page.evaluate("window.scrollBy(0, 5)")
                 except:
                     pass
+                # 中途截图只存本地，不发 TG
                 if elapsed in (60, AFK_SECONDS // 2) or elapsed % 300 == 0:
-                    save_shot(page, f"06_afk_{elapsed}s", f"挂机中 {elapsed//60}min")
+                    save_shot(page, f"06_afk_{elapsed}s")
 
-            save_shot(page, "07_done", "全部结束")
-            tg_text("✅ 流程完成")
+            # 挂机完成：发送通知 + 截图
+            save_shot(page, "07_afk_done", send_tg=True, caption=f"✅ AFK 挂机完成（{AFK_SECONDS//60}分钟）")
+            tg_text(f"✅ AFK 挂机完成（{AFK_SECONDS//60}分钟）")
 
         except Exception as e:
-            tg_text(f"异常: {e}")
+            tg_text(f"❌ 异常: {e}")
             try:
-                save_shot(page, "error", str(e)[:80])
+                save_shot(page, "error", send_tg=True, caption=f"异常: {str(e)[:80]}")
             except:
                 pass
             raise
