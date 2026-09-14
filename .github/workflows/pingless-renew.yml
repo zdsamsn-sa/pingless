@@ -2,22 +2,18 @@ name: Pingless Auto Renew + AFK Credits
 
 on:
   schedule:
-    # 每 2 小时运行一次，累计接近全天挂机
-    - cron: '0 */2 * * *'
+    - cron: '0 */2 * * *'   # 每2小时
   workflow_dispatch:
 
 jobs:
   renew:
     runs-on: ubuntu-latest
-    # 单次最长 6 小时（GitHub 限制）
     timeout-minutes: 360
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -33,9 +29,7 @@ jobs:
           NUMERIC_ID: ${{ secrets.NUMERIC_ID }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 每次挂机 30 分钟（1800秒）。每2小时跑一次 ≈ 每天累计约 6 小时
-          # 如果想更久，可改成 3600（1小时），但注意单次任务不要超过 5~6 小时
-          AFK_SECONDS: "1800"
+          AFK_SECONDS: "1800"   # 30分钟，可改
         run: python scripts/renew.py
 
       - name: Upload screenshots
