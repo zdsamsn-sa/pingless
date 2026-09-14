@@ -1,74 +1,45 @@
 # Pingless 自动续期 + AFK Credits
 
-基于 GitHub Actions 的 Pingless 免费服务器自动续期与 AFK Credits 收集脚本。
+## 重要：Cookie 必须完整有效
 
-## 功能
+当前最常见失败原因是 **SESSION_COOKIE 不完整或已过期**。
 
-- Session Cookie 登录（推荐）
-- 自动尝试点击续期按钮
-- 自动访问 `/afk` 并挂机收集 Credits
-- **全程自动截图**，方便排查问题
-- 页面元素调试信息输出（按钮文字 + 关键词）
-- 截图自动上传为 Artifact
-- 支持 Telegram 通知
-- 支持手动触发
+### 正确获取 Cookie 步骤
 
-## 快速开始
+1. 浏览器打开 https://dash.pingless.org 并**成功登录**（能看到服务器列表）
+2. 按 F12 → Application → Cookies → 选择 `https://dash.pingless.org`
+3. 使用扩展 **Cookie-Editor** 导出全部 Cookie（格式：`name=value; name2=value2`）
+4. 完整粘贴到 GitHub Secret `SESSION_COOKIE`
 
-1. 把本仓库内容放到你的 **私有** GitHub 仓库。
-2. 进入 **Settings → Secrets and variables → Actions**，添加以下 Secrets：
+只复制 `cf_clearance` 是不够的，必须包含真正的会话 Cookie。
 
-| Secret 名称 | 必填 | 说明 |
-|-------------|------|------|
-| `SESSION_COOKIE` | **是** | 浏览器登录后复制的 Cookie |
-| `SERVER_ID` | 是 | 服务器 id（示例 `b7887be7`） |
-| `NUMERIC_ID` | 是 | numeric 参数（示例 `4678`） |
-| `TG_BOT_TOKEN` | 否 | Telegram Bot Token |
-| `TG_CHAT_ID` | 否 | Telegram Chat ID |
+## 运行频率与 AFK 时长说明
 
-### 获取 SESSION_COOKIE
+GitHub Actions 单次任务最长约 6 小时，**无法一次挂满 24 小时**。
 
-1. 浏览器登录 https://dash.pingless.org
-2. 按 `F12` → Application → Cookies → 选中 `dash.pingless.org`
-3. 复制所有 cookie（或用 Cookie-Editor 扩展导出为 `name=value; name2=value2`）
-4. 粘贴到 Secret `SESSION_COOKIE`
+当前默认策略：
+- 每 **2 小时** 自动运行一次
+- 每次 AFK 挂机 **30 分钟**
+- 全天大约累计 6 小时在线时间
 
-3. 启用 Actions 后每 12 小时自动运行，也可手动触发。
-
-## 截图说明
-
-每次运行都会在 `screenshots/` 目录生成多张截图，并作为 Artifact 上传：
-
-| 文件名 | 说明 |
-|--------|------|
-| `01_home.png` | 首页（登录后） |
-| `02_manage_page.png` | 服务器管理页（续期前）**重点看这个** |
-| `03_after_renew_click.png` | 点击续期后 |
-| `04_afk_page.png` | AFK 页面初始 **重点看这个** |
-| `05_afk_started.png` | 点击 AFK 按钮后 |
-| `06_afk_mid.png` | 挂机中途 |
-| `07_afk_final.png` | 挂机结束 |
-
-**如何下载截图**：Actions 运行完成后 → 进入该次运行 → 底部 Artifacts → 下载 `screenshots-xxxxx`
-
-## 调试建议
-
-如果日志显示「未找到续期按钮」或 AFK 没有效果：
-
-1. 下载最新截图，特别是 `02_manage_page.png` 和 `04_afk_page.png`
-2. 把截图发给我，或告诉我页面上实际按钮的文字
-3. 我会根据真实页面更新选择器
-
-也可以在日志中查看「页面调试」输出的按钮文字和关键词。
-
-## 调整 AFK 挂机时长
-
-在工作流文件中修改环境变量：
-
+如需调整，修改工作流里的：
 ```yaml
-AFK_SECONDS: "120"   # 改为 120 秒等
+AFK_SECONDS: "1800"   # 秒，1800=30分钟，3600=1小时
 ```
+以及 cron 表达式。
 
-## 免责声明
+## Secrets 配置
 
-仅供个人学习使用。请遵守 Pingless 服务条款，合理使用，风险自负。
+| Secret | 必填 | 说明 |
+|--------|------|------|
+| SESSION_COOKIE | 是 | 完整 Cookie |
+| SERVER_ID | 是 | 服务器 id |
+| NUMERIC_ID | 是 | numeric 参数 |
+| TG_BOT_TOKEN / TG_CHAT_ID | 否 | Telegram 通知 |
+
+## 截图与调试
+
+每次运行都会上传截图到 Artifact，重点查看：
+- `01_home.png` / `02_manage_page.png` / `04_afk_page.png`
+
+如果这些截图还是登录页，说明 Cookie 仍无效。
